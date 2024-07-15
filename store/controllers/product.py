@@ -1,8 +1,7 @@
 from typing import List
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
 from pydantic import UUID4
-from store.core.exceptions import NotFoundException
-
+from store.core.exceptions import NotFoundException, InsertionError
 from store.schemas.product import ProductIn, ProductOut, ProductUpdate, ProductUpdateOut
 from store.usecases.product import ProductUsecase
 
@@ -13,7 +12,11 @@ router = APIRouter(tags=["products"])
 async def post(
     body: ProductIn = Body(...), usecase: ProductUsecase = Depends()
 ) -> ProductOut:
-    return await usecase.create(body=body)
+    try:
+        return await usecase.create(body=body)
+    except InsertionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message)
 
 
 @router.get(path="/{id}", status_code=status.HTTP_200_OK)
@@ -23,12 +26,18 @@ async def get(
     try:
         return await usecase.get(id=id)
     except NotFoundException as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
 
 
 @router.get(path="/", status_code=status.HTTP_200_OK)
-async def query(usecase: ProductUsecase = Depends()) -> List[ProductOut]:
-    return await usecase.query()
+async def query(
+    min_price: float = 5000, max_price: float = 8000, usecase: ProductUsecase = Depends()
+) -> List[ProductOut]:
+    products = await usecase.query()
+    filtered_products = [
+        product for product in products if min_price < product.price < max_price]
+    return filtered_products
 
 
 @router.patch(path="/{id}", status_code=status.HTTP_200_OK)
@@ -37,7 +46,17 @@ async def patch(
     body: ProductUpdate = Body(...),
     usecase: ProductUsecase = Depends(),
 ) -> ProductUpdateOut:
-    return await usecase.update(id=id, body=body)
+    try:
+        product = await usecase.get(id=id)
+        if not product:
+            raise NotFoundException()
+
+        # Atualizar o campo updated_at
+        body.updated_at = datetime.now()
+        return await usecase.update(id=id, body=body)
+    except NotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
 
 
 @router.delete(path="/{id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -47,4 +66,5 @@ async def delete(
     try:
         await usecase.delete(id=id)
     except NotFoundException as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
